@@ -3,13 +3,13 @@ from flask import Flask, render_template, request, jsonify, redirect, url_for, s
 from functools import wraps
 from flask_socketio import SocketIO
 from dotenv import load_dotenv
-from utils.db import init_db, connect, now, to_dict
+import utils.db as db_utils # New import style to avoid circular import issues with load_dotenv
 from utils.crypto import enc_str, dec_str
 from utils.binance import BinanceUM
 from cryptography.fernet import InvalidToken
 import websocket
 
-load_dotenv(); init_db()
+load_dotenv(); db_utils.init_db() # Use new import style
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', os.urandom(24))
 socketio = SocketIO(app, cors_allowed_origins='*', async_mode='threading')
@@ -36,32 +36,64 @@ def login():
 def logout():
     session.pop('logged_in', None); flash('You have been logged out.', 'success'); return redirect(url_for('login'))
 
+# --- FIX 1: Separate execute() and fetchone() for PyMySQL ---
 def get_bot(bot_id):
-    with connect() as con: r = con.cursor().execute('SELECT * FROM bots WHERE id=?', (bot_id,)).fetchone(); return to_dict(r) if r else None
+    with db_utils.connect() as con: 
+        cur = con.cursor()
+        cur.execute('SELECT * FROM bots WHERE id=%s', (bot_id,))
+        r = cur.fetchone()
+        return db_utils.to_dict(r) if r else None
+        
 def get_account(acc_id):
-    with connect() as con: r=con.cursor().execute('SELECT * FROM accounts WHERE id=?',(acc_id,)).fetchone(); return to_dict(r)
+    with db_utils.connect() as con: 
+        cur = con.cursor()
+        cur.execute('SELECT * FROM accounts WHERE id=%s',(acc_id,))
+        r = cur.fetchone()
+        return db_utils.to_dict(r)
+        
 def safe_get_client(acc):
     try: api_key=dec_str(acc['api_key_enc']); api_secret=dec_str(acc['api_secret_enc']); return BinanceUM(api_key, api_secret, bool(acc['testnet']))
     except InvalidToken: raise RuntimeError("Encryption key mismatch")
+
+# --- FIX 2: Separate execute() and fetchall() ---
 def list_accounts():
-    with connect() as con: return [to_dict(r) for r in con.cursor().execute('SELECT * FROM accounts ORDER BY id DESC').fetchall()]
+    with db_utils.connect() as con:
+        cur = con.cursor()
+        cur.execute('SELECT * FROM accounts ORDER BY id DESC')
+        return [db_utils.to_dict(r) for r in cur.fetchall()]
+
+# --- FIX 3: Separate execute() and fetchall() ---
 def list_templates():
-    with connect() as con:
+    with db_utils.connect() as con:
         out=[]
-        for r in con.cursor().execute('SELECT * FROM templates ORDER BY id DESC').fetchall():
-            d=to_dict(r); d['r_points_json']=json.loads(d['r_points_json'] or '[]'); out.append(d)
+        cur = con.cursor()
+        cur.execute('SELECT * FROM templates ORDER BY id DESC')
+        for r in cur.fetchall():
+            d=db_utils.to_dict(r); d['r_points_json']=json.loads(d['r_points_json'] or '[]'); out.append(d)
         return out
+        
+# --- FIX 4: Separate execute() and handle count fetch with PyMySQL DictCursor ---
 def list_bots(limit=5, offset=0):
-    with connect() as con:
-        items = [to_dict(r) for r in con.cursor().execute('SELECT b.*, a.name as account_name FROM bots b LEFT JOIN accounts a ON a.id=b.account_id ORDER BY b.id DESC LIMIT ? OFFSET ?', (limit, offset)).fetchall()]
-        total = con.cursor().execute('SELECT COUNT(*) FROM bots').fetchone()[0]
+    with db_utils.connect() as con:
+        cur = con.cursor()
+        
+        # Fetch items
+        cur.execute('SELECT b.*, a.name as account_name FROM bots b LEFT JOIN accounts a ON a.id=b.account_id ORDER BY b.id DESC LIMIT %s OFFSET %s', (limit, offset))
+        items = [db_utils.to_dict(r) for r in cur.fetchall()]
+        
+        # Fetch total count - PyMySQL DictCursor returns a dictionary
+        cur.execute('SELECT COUNT(*) FROM bots')
+        # Access the count by its default column name in DictCursor
+        total = cur.fetchone()['COUNT(*)'] 
+        
         return {'items': items, 'total': total}
+        
 def update_account_balances():
     for acc in list_accounts():
         if not acc['active']: continue
         try:
             bn = safe_get_client(acc); balance = bn.futures_balance()
-            with connect() as con: con.cursor().execute('UPDATE accounts SET futures_balance=?, updated_at=? WHERE id=?', (balance, now(), acc['id'])); con.commit()
+            with db_utils.connect() as con: con.cursor().execute('UPDATE accounts SET futures_balance=%s, updated_at=%s WHERE id=%s', (balance, db_utils.now(), acc['id'])); con.commit()
         except Exception as e: print(f"Could not update balance for {acc['name']}: {e}")
 #</editor-fold>
 
@@ -86,19 +118,19 @@ def accounts_add():
     if not name or not api_key or not api_secret: return jsonify({'error':'Missing fields'}),400
     try: bn=BinanceUM(api_key, api_secret, bool(testnet)); balance = bn.futures_balance(); bn.set_hedge_mode(True)
     except Exception as e: return jsonify({'error':str(e)}),400
-    with connect() as con: con.cursor().execute('INSERT INTO accounts (name,exchange,api_key_enc,api_secret_enc,testnet,active,futures_balance,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?)', (name,'BINANCE_UM',enc_str(api_key),enc_str(api_secret),testnet,1,balance,now(),now())); con.commit()
+    with db_utils.connect() as con: con.cursor().execute('INSERT INTO accounts (name,exchange,api_key_enc,api_secret_enc,testnet,active,futures_balance,created_at,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)', (name,'BINANCE_UM',enc_str(api_key),enc_str(api_secret),testnet,1,balance,db_utils.now(),db_utils.now())); con.commit()
     return jsonify({'ok':True,'accounts':list_accounts()})
 
 @app.route('/accounts/toggle/<int:acc_id>', methods=['POST'])
 def accounts_toggle(acc_id):
-    with connect() as con:
-        con.cursor().execute('UPDATE accounts SET active = 1 - active, updated_at=? WHERE id=?',(now(),acc_id))
+    with db_utils.connect() as con:
+        con.cursor().execute('UPDATE accounts SET active = 1 - active, updated_at=%s WHERE id=%s',(db_utils.now(),acc_id))
         con.commit()
     return jsonify({'ok':True})
 @app.route('/accounts/delete/<int:acc_id>', methods=['POST'])
 def accounts_delete(acc_id):
-    with connect() as con:
-        con.cursor().execute('DELETE FROM accounts WHERE id=?',(acc_id,))
+    with db_utils.connect() as con:
+        con.cursor().execute('DELETE FROM accounts WHERE id=%s',(acc_id,))
         con.commit()
     return jsonify({'ok':True,'accounts':list_accounts()})
 @app.route('/api/futures/symbols')
@@ -116,16 +148,16 @@ def tpl_save():
     data = request.get_json(force=True)
     name = data.get('name', '').strip()
     if not name: return jsonify({'error': 'Name required'}), 400
-    with connect() as con:
+    with db_utils.connect() as con:
         con.cursor().execute("""INSERT INTO templates (
                 name, symbol, margin_type, time_frame, trade_mode, run_mode, long_amount, long_leverage, 
                 recovery_margin, max_trades, r_points_json, open_on_new_candle, cond_sl_close, 
                 close_on_candle_end, cond_trailing, cond_close_last, created_at, trade_amount_mode, recovery_max_amount
-            ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""", (
             name, data.get('symbol','').upper(), data.get('margin_mode'), data.get('time_frame'), data.get('trade_mode'), data.get('run_mode'), 
             data.get('trade_amount'), data.get('leverage'), data.get('recovery_margin'), data.get('max_trades'), 
             json.dumps(data.get('r_points') or []), data.get('open_on_new_candle'), data.get('cond_sl_close'), 
-            data.get('close_on_candle_end'), data.get('cond_trailing'), data.get('cond_close_last'), now(), 
+            data.get('close_on_candle_end'), data.get('cond_trailing'), data.get('cond_close_last'), db_utils.now(), 
             data.get('trade_amount_mode'), data.get('recovery_max_amount')
         ))
         con.commit()
@@ -133,15 +165,19 @@ def tpl_save():
 
 @app.route('/templates/get/<int:tpl_id>')
 def tpl_get(tpl_id):
-    with connect() as con:
-        r=con.cursor().execute('SELECT * FROM templates WHERE id=?',(tpl_id,)).fetchone()
-        d=to_dict(r)
+    # --- FIX 5: Separate execute() and fetchone() ---
+    with db_utils.connect() as con:
+        cur = con.cursor()
+        cur.execute('SELECT * FROM templates WHERE id=%s',(tpl_id,))
+        r=cur.fetchone()
+        d=db_utils.to_dict(r)
         d['r_points_json']=json.loads(d['r_points_json'] or '[]')
         return jsonify(d)
+        
 @app.route('/templates/delete/<int:tpl_id>', methods=['POST'])
 def tpl_delete(tpl_id):
-    with connect() as con:
-        con.cursor().execute('DELETE FROM templates WHERE id=?',(tpl_id,))
+    with db_utils.connect() as con:
+        con.cursor().execute('DELETE FROM templates WHERE id=%s',(tpl_id,))
         con.commit()
     return jsonify({'ok':True})
 
@@ -167,16 +203,16 @@ def bots_submit():
         bn.set_margin_type(data['symbol'], data['margin_mode'])
         bn.set_leverage(data['symbol'], data['leverage'])
         
-        with connect() as con:
+        with db_utils.connect() as con:
             cur = con.cursor()
             cur.execute("""INSERT INTO bots (
                     name, account_id, symbol, long_amount, long_leverage, r_points_json, start_time, testnet, 
                     margin_type, time_frame, trade_mode, run_mode, recovery_margin, max_trades, open_on_new_candle, 
                     cond_sl_close, close_on_candle_end, cond_trailing, cond_close_last, long_status, short_status, 
                     trade_amount_mode, recovery_max_amount, current_trade_amount
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""", (
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""", (
                 data['name'], data['account_id'], data['symbol'], data['trade_amount'], data['leverage'], 
-                json.dumps(data.get('r_points') or []), now(), acc['testnet'], data['margin_mode'], data['time_frame'], 
+                json.dumps(data.get('r_points') or []), db_utils.now(), acc['testnet'], data['margin_mode'], data['time_frame'], 
                 data['trade_mode'], data['run_mode'], data.get('recovery_margin'), data.get('max_trades'), 
                 data.get('open_on_new_candle'), data.get('cond_sl_close'), data.get('close_on_candle_end'), 
                 data.get('cond_trailing'), data.get('cond_close_last'), 'Idle', 'Idle', data.get('trade_amount_mode'), 
@@ -218,10 +254,11 @@ def bots_toggle_pause(bot_id):
 TRADE_THREADS = {}
 TRADE_LOCK = threading.Lock()
 def db_update_bot(bot_id, updates):
-    fields = ', '.join([f"{k}=?" for k in updates.keys()])
+    # PyMySQL parameter syntax %s
+    fields = ', '.join([f"{k}=%s" for k in updates.keys()])
     values = list(updates.values()) + [bot_id]
-    with connect() as con:
-        con.cursor().execute(f"UPDATE bots SET {fields} WHERE id=?", values)
+    with db_utils.connect() as con:
+        con.cursor().execute(f"UPDATE bots SET {fields} WHERE id=%s", values)
         con.commit()
 
 def compute_roi(entry, mark, lev, side):
@@ -238,7 +275,9 @@ def open_position(bot, bn_client, side):
         qty = bn_client.round_lot_size(symbol, amount / price)
         bn_client.order_market(symbol, 'BUY' if side == 'LONG' else 'SELL', qty, position_side=side)
         time.sleep(0.5)
-        entry_price = float(bn_client.get_user_trades(symbol, limit=1)[0].get('price', price))
+        last_trade = bn_client.get_user_trades(symbol, limit=1)
+        # Check if last_trade is a list and not empty before accessing index 0
+        entry_price = float(last_trade[0].get('price', price)) if last_trade else price
         
         updates = {
             ('long_status' if side == 'LONG' else 'short_status'): 'Running',
@@ -274,8 +313,9 @@ def close_position(bot, bn_client, manual_close=False):
             side = 'LONG' if float(pos_to_close['positionAmt']) > 0 else 'SHORT'
             bn_client.order_market(symbol, 'SELL' if side == 'LONG' else 'BUY', abs(float(pos_to_close['positionAmt'])), position_side=side)
             time.sleep(1)
-            last_trade = bn_client.get_user_trades(symbol, limit=1)[0]
-            pnl = float(last_trade.get('realizedPnl', 0))
+            last_trade = bn_client.get_user_trades(symbol, limit=1)
+            # Check if last_trade is a list and not empty before accessing index 0
+            pnl = float(last_trade[0].get('realizedPnl', 0)) if last_trade else 0.0
             print(f"SUCCESS: Closed {side} for bot {bot_id} with PnL: {pnl}")
     except Exception as e:
         print(f"FAIL: Could not close for bot {bot_id}. Reason: {e}")
@@ -485,11 +525,14 @@ def start_trade_worker(bot_id):
     th.start()
     TRADE_THREADS[bot_id] = th
 
+# --- FIX 6: Separate execute() and fetchall() (The main fix) ---
 def start_all_bot_workers():
     print("Starting workers for all active bots...")
-    with connect() as con:
+    with db_utils.connect() as con:
         query = "SELECT id FROM bots WHERE long_status NOT LIKE 'Completed%'"
-        for r in con.cursor().execute(query).fetchall():
+        cur = con.cursor()
+        cur.execute(query) # Execute query
+        for r in cur.fetchall(): # Fetch results from the cursor
             if r['id'] not in TRADE_THREADS:
                 print(f"Starting worker for bot ID: {r['id']}")
                 start_trade_worker(r['id'])
@@ -497,6 +540,6 @@ def start_all_bot_workers():
 if __name__ == '__main__':
     start_all_bot_workers()
     host=os.environ.get('HOST','0.0.0.0')
-    port=int(os.environ.get('PORT','5000'))
+    port=int(os.environ.get('PORT','5001'))
     socketio.run(app, host=host, port=port, allow_unsafe_werkzeug=True)
 #</editor-fold>
