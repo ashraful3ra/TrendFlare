@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="card" style="max-width: 400px; margin: 40px auto;">
+    <h2>Login</h2>
+    <p>Please enter the password to access the application.</p>
+
+    {% with messages = get_flashed_messages(with_categories=true) %}
+        {% if messages %}
+            {% for category, message in messages %}
+                <div class="alert alert-{{ category }}">{{ message }}</div>
+            {% endfor %}
+        {% endif %}
+    {% endwith %}
+
+    <form method="POST" action="{{ url_for('login') }}">
+        <div class="mt">
+            <label class="small">Password</label>
+            <input type="password" name="password" class="input" required>
+        </div>
+        <div class="mt2">
+            <button type="submit" class="btn btn-success">Login</button>
+        </div>
+    </form>
+</div>
+{% endblock %}
+{% block scripts %}{% endblock %}

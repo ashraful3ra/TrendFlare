@@ -1,0 +1,27 @@
+
+{% extends "base.html" %}{% set active_page='account' %}
+{% block content %}
+<div class="grid">
+  <div class="card">
+    <h2>Add Account</h2>
+    <div class="mt"><label class="small">Name</label><input id="acc_name" class="input"></div>
+    <div class="mt"><label class="small">Exchange</label>
+      <select id="acc_exchange" class="input"><option value="BINANCE_UM">Binance USDT-M Futures</option></select>
+    </div>
+    <div class="mt"><label class="small">API Key</label><input id="acc_api_key" class="input"></div>
+    <div class="mt"><label class="small">API Secret</label><input id="acc_api_secret" type="password" class="input"></div>
+    <div class="mt"><label class="switch"><input id="acc_testnet" type="checkbox"><span class="dot"></span><span class="small">Use Testnet</span></label></div>
+    <div class="row mt2"><button id="btn_save" class="btn btn-success">Save</button></div>
+    <div class="small mt">Secrets are encrypted locally and never shown again.</div>
+  </div>
+  <div class="card">
+    <h2>Accounts</h2>
+    <div id="account_list" class="list mt"></div>
+    <div class="small mt">Toggle to include/exclude an account from bot runs.</div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/account.js') }}"></script>
+<script>window.__ACCOUNTS__={{ accounts_json|safe }};renderAccounts(window.__ACCOUNTS__);</script>
+{% endblock %}

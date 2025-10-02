@@ -1,0 +1,102 @@
+{% extends "base.html" %}{% set active_page='dashboard' %}
+{% block content %}
+<div class="grid">
+  <div class="card">
+    <h2>Create Bot</h2>
+    
+    <div class="row mt">
+      <div style="flex:1"><label class="small">Bot Name</label><input id="bot_name" class="input" placeholder="Type name"></div>
+      <div style="flex:1"><label class="small">Trade Account</label><select id="bot_account" class="input"><option value="">Select account</option>{% for a in accounts %}{% if a.active %}<option value="{{a.id}}">{{a.name}} ({{'Testnet' if a.testnet else 'Mainnet'}})</option>{% endif %}{% endfor %}</select></div>
+    </div>
+
+    <div class="row mt">
+        <div style="flex:2">
+            <label class="small">Coin (USDT-M Futures)</label>
+            <div style="position: relative;">
+                <input id="bot_symbol" class="input" placeholder="Type to search" autocomplete="off">
+                <div id="symbol_suggest" class="list"></div>
+            </div>
+        </div>
+        <div style="flex:1"><label class="small">Time Frame</label><select id="time_frame" class="input"><option value="1m">1m</option><option value="5m">5m</option><option value="15m">15m</option><option value="1h">1h</option><option value="4h">4h</option></select></div>
+        <div style="flex:1"><label class="small">Margin mode</label><select id="margin_mode" class="input"><option value="ISOLATED">Isolated</option><option value="CROSSED">Cross</option></select></div>
+    </div>
+
+    <div class="row mt">
+        <div style="flex:1"><label class="small">Leverage</label><input id="leverage" class="input" type="number" min="1" max="150" placeholder="1-150"></div>
+        <div style="flex:1"><label class="small">Amount (USDT)</label><input id="trade_amount" class="input" type="number" min="1" step="0.1" placeholder="Min notional $"></div>
+    </div>
+
+    <div class="row mt">
+        <div style="flex:1"><label class="small">Trade mode</label><select id="trade_mode" class="input"><option value="Follow">Follow</option><option value="Unfollow">Unfollow</option></select></div>
+        <div style="flex:1">
+            <label class="small">Trade amount mode</label>
+            <select id="trade_amount_mode" class="input">
+                <option value="Normal">Normal</option>
+                <option value="Recovery">Recovery</option>
+            </select>
+        </div>
+    </div>
+
+    <div id="recovery_fields" class="row mt" style="display: none;">
+        <div style="flex:1"><label class="small">Recovery Amount</label><input id="recovery_margin" class="input" type="number" value="0" placeholder="0"></div>
+        <div style="flex:1"><label class="small">Recovery Max Amount (USDT)</label><input id="recovery_max_amount" class="input" type="number" placeholder="0"></div>
+    </div>
+    
+    <div class="row mt">
+        <div style="flex:1"><label class="small">Run Mode</label><select id="run_mode" class="input"><option value="Ongoing">Ongoing</option><option value="Limit">Limit</option></select></div>
+        <div style="flex:1"><label class="small">Max Trades (if Limit)</label><input id="max_trades" class="input" type="number" value="0"></div>
+    </div>
+    
+    <div class="mt2"><label class="small">R points (ROI %)</label><div id="r_list" class="mt" style="display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px;"></div><button id="r_add" class="btn btn-primary mt">Add new</button></div>
+
+    <div class="mt2">
+      <h4>Open Conditions:</h4>
+      <label class="switch">
+        <input id="cond_open_new_candle" type="checkbox"><span class="dot"></span>
+        <span>The trade will start from the Open Price of each new candle.</span>
+      </label>
+      <label class="switch mt">
+        <input id="cond_open_after_close" type="checkbox"><span class="dot"></span>
+        <span>After the previous trade is closed, the next trade will start from the Open Price of the new candle.</span>
+      </label>
+    </div>
+    <div class="mt2">
+      <h4>Close Conditions:</h4>
+      <label class="switch">
+        <input id="cond_sl_close" type="checkbox"><span class="dot"></span>
+        <span>If the Stoploss is hit, the trade will be closed.</span>
+      </label>
+      <label class="switch mt">
+        <input id="cond_close_candle_end" type="checkbox"><span class="dot"></span>
+        <span>Each trade will be closed at the Close Price of every candle.</span>
+      </label>
+      <label class="switch mt">
+        <input id="cond_trailing" type="checkbox"><span class="dot"></span>
+        <span>As soon as the price hits a new R point, the Stoploss will be set at the previous R point.</span>
+      </label>
+      <label class="switch mt">
+        <input id="cond_close_last" type="checkbox"><span class="dot"></span>
+        <span>The trade will be closed at the last R point.</span>
+      </label>
+    </div>
+    
+    <div class="row mt2"><button id="btn_submit" class="btn btn-success">Submit Trade</button><button id="btn_save_tpl" class="btn btn-primary">Save Template</button></div>
+    <h3 class="mt2">Saved Templates</h3><div id="tpl_list" class="list"></div>
+  </div>
+  
+  <div class="card">
+    <div class="row" style="justify-content:space-between"><h2>Bots</h2><div id="pagination-controls" class="row"><button id="btn_prev" class="btn">Previous</button><span id="page_info" class="small"></span><button id="btn_next" class="btn">Next</button></div></div>
+    
+    <div id="bot-display-area">
+        </div>
+  </div>
+</div>
+{% endblock %}
+{% block scripts %}
+<script src="{{ url_for('static', filename='js/dashboard.js') }}"></script>
+<script>
+    document.addEventListener('DOMContentLoaded', () => {
+        hydrateDashboard();
+    });
+</script>
+{% endblock %}

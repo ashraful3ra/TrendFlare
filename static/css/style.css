@@ -1,0 +1,39 @@
+:root{--bg:#0e1520;--card:#121a26;--text:#c9d4e5;--muted:#7d8aa3;--cyan:#22d3ee;--green:#1db954;--danger:#ef4444;--amber:#f59e0b;--primary:#f08e25}
+*{box-sizing:border-box}body{background:var(--bg);color:var(--text);margin:0;font-family:ui-sans-serif,system-ui,Segoe UI,Roboto,Arial}
+.navbar{background:#0b1220;border-bottom:1px solid #0f1a2b;}
+.navbar-inner {display: flex;justify-content: space-between;align-items: center;}
+.nav a{color:var(--text);opacity:.8;text-decoration:none;margin-left:18px}.nav a.active{opacity:1;border-bottom:2px solid #f08d25;padding-bottom:4px}
+.container{padding:20px;max-width:1200px;margin:0 auto}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}.card{background:var(--card);border:1px solid #0f1a2b;padding:16px;border-radius:14px;box-shadow:0 10px 30px rgba(0,0,0,.25)}
+.input,select,.btn{background:#0b1220;border:1px solid #1e2a3f;color:var(--text);border-radius:10px;padding:10px 12px;width:100%;outline:none}
+.row{display:flex;gap:12px;align-items:center}.mt{margin-top:12px}.mt2{margin-top:20px}.small{font-size:12px;color:var(--muted)}
+.btn{cursor:pointer;transition:.2s ease;font-weight:600; border-radius: 8px;}.btn:hover{transform:translateY(-1px)}
+.btn-primary{background:var(--primary);border-color:var(--primary);color:#06202a}.btn-success{background:#1db954;border-color:#1db954;color:#062010}
+.btn-danger{background:#ef4444;border-color:#ef4444}.btn-warning{background:var(--amber);border-color:var(--amber)}
+.btn:disabled{cursor:not-allowed;opacity:.5}
+.btn:disabled:hover{transform:none}
+.btn-closed{background:var(--bg);border-color:#1e2a3f;color:var(--muted);cursor:not-allowed;width:100%;text-align:center}
+.btn-closed:hover{transform:none}
+.list{display:flex;flex-direction:column;gap:10px}.list-item{background:#0b1220;border:1px solid #1e2a3f;padding:10px;border-radius:12px;display:flex;align-items:center;justify-content:space-between}
+.switch{display:flex;align-items:flex-start;gap:8px;cursor:pointer}
+.switch input{display:none}.switch .dot{width:32px;height:18px;background:#0b1220;border:1px solid #24405e;border-radius:999px;position:relative;flex-shrink:0;}
+.switch .dot::after{content:'';width:14px;height:14px;background:#2a3b5e;position:absolute;top:1px;left:1px;border-radius:50%;transition:.2s}
+.switch input:checked + .dot{background:#0d3b3a;border-color:#0d3b3a}.switch input:checked + .dot::after{left:17px;background:#00d3b8}
+.roi-pos{color:var(--green)}.roi-neg{color:var(--danger)}
+.status-ok { color:var(--green); } .status-warn { color:var(--amber); } .status-off { color:var(--muted); }
+.trade-long { color: var(--green); } .trade-short { color: var(--danger); } .trade-none { color: var(--muted); }
+#symbol_suggest{position:absolute;width:100%;background:#1c2738;border:1px solid #3a4b6b;border-top:none;border-radius:0 0 10px 10px;z-index:10;max-height:220px;overflow-y:auto;box-shadow:0 10px 20px rgba(0,0,0,.2);display:none}
+#symbol_suggest .list-item{background:transparent;border:none;padding:12px 15px;cursor:pointer;transition:background .2s ease;border-radius:0}
+#symbol_suggest .list-item:hover{background:linear-gradient(90deg, rgba(34,211,238,0.3) 0%, rgba(14,21,32,0) 100%);border-left:3px solid var(--cyan);padding-left:12px}
+@media (max-width:900px){.grid{grid-template-columns:1fr}}
+
+/* === New & Updated Bot Card Styles === */
+.bot-container { padding: 20px; border: 1px solid #2a2f3a; border-radius: 12px; background: #0f1420; margin-bottom: 20px; }
+.bot-name { font-size: 18px; font-weight: bold; color: var(--text); margin-bottom: 4px; }
+.bot-header-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 16px; font-size: 14px; padding-bottom: 15px; border-bottom: 1px solid #2a2f3a; }
+.bot-header-grid .value { font-weight: bold; }
+.bot-live-info-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 16px; font-size: 13px; color: var(--muted); padding: 15px 0; }
+.bot-stats-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 16px; padding: 15px 0; font-size: 13px; border-top: 1px solid #2a2f3a; }
+.bot-pnl-section { display: grid; grid-template-columns: 1fr 1fr; padding-top: 15px; border-top: 1px solid #2a2f3a; align-items: center; }
+.bot-pnl-section .pnl-value { font-size: 24px; font-weight: bold; text-align: right; }
+.bot-actions { margin-top: 16px; display: flex; gap: 10px; justify-content: flex-end; }
