@@ -7,7 +7,7 @@ from dotenv import load_dotenv
 load_dotenv() 
 
 # DB_FILE is removed as connection details are in .env
-SCHEMA_VERSION = 12 
+SCHEMA_VERSION = 14 
 
 def now(): return int(time.time())
 
@@ -144,6 +144,21 @@ def init_db():
     if current_version < 12:
         try: cur.execute("ALTER TABLE bots ADD COLUMN paused INT DEFAULT 0")
         except Exception as e: print(f"Migration v12 failed: {e}")
+        con.commit()
+
+    # --- Migration v13: Add user_id to bots and templates for Multi-Tenancy ---
+    if current_version < 13:
+        new_column = "user_id INT NOT NULL"
+        for table in ['bots', 'templates']:
+            try: cur.execute(f"ALTER TABLE {table} ADD COLUMN {new_column}")
+            except Exception as e: print(f"Migration v13 for {table} failed ({new_column}): {e}")
+        con.commit()
+
+    # --- Migration v14: Add user_id to accounts for Multi-Tenancy ---
+    if current_version < 14:
+        new_column = "user_id INT NOT NULL"
+        try: cur.execute(f"ALTER TABLE accounts ADD COLUMN {new_column}")
+        except Exception as e: print(f"Migration v14 for accounts failed ({new_column}): {e}")
         con.commit()
 
     if current_version < SCHEMA_VERSION:

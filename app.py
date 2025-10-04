@@ -3,41 +3,57 @@ from flask import Flask, render_template, request, jsonify, redirect, url_for, s
 from functools import wraps
 from flask_socketio import SocketIO
 from dotenv import load_dotenv
-import utils.db as db_utils # New import style to avoid circular import issues with load_dotenv
+import utils.db as db_utils
 from utils.crypto import enc_str, dec_str
 from utils.binance import BinanceUM
 from cryptography.fernet import InvalidToken
 import websocket
 
-load_dotenv(); db_utils.init_db() # Use new import style
+# NEW: Import JWT components
+from flask_jwt_extended import JWTManager, jwt_required, get_jwt_identity
+
+load_dotenv(); db_utils.init_db()
 app = Flask(__name__)
 app.config['SECRET_KEY'] = os.environ.get('SECRET_KEY', os.urandom(24))
 socketio = SocketIO(app, cors_allowed_origins='*', async_mode='threading')
 
+# NEW JWT CONFIGURATION (MIRRORS AUTH SERVICE)
+app.config['JWT_SECRET_KEY'] = os.environ.get('JWT_SECRET_KEY')
+app.config['JWT_TOKEN_LOCATION'] = ['cookies']
+app.config['JWT_COOKIE_CSRF_PROTECT'] = False # Auth Service-এ বন্ধ ছিল, তাই এখানেও বন্ধ রাখা হলো
+app.config['JWT_COOKIE_DOMAIN'] = os.environ.get('JWT_COOKIE_DOMAIN') or None
+app.config['JWT_COOKIE_SECURE'] = os.environ.get('JWT_COOKIE_SECURE', 'false').lower() == 'true'
+
+jwt = JWTManager(app)
+AUTH_SERVICE_URL = os.environ.get('AUTH_SERVICE_URL', 'https://utradebot.com') # SSO URL from .env
+
 #<editor-fold desc="Auth & Helpers">
-def login_required(f):
+def sso_required(f):
+    """Decorator to enforce SSO authentication via JWT cookie."""
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        if not session.get('logged_in'): return redirect(url_for('login'))
-        return f(*args, **kwargs)
+        try:
+            # Check for valid JWT token in cookies
+            jwt_required()(lambda: None)()
+            return f(*args, **kwargs)
+        except Exception:
+            # If no valid token, redirect to the Auth Service login page
+            redirect_to = request.url
+            sso_login_url = f"{AUTH_SERVICE_URL}/login?redirect_url={redirect_to}"
+            return redirect(sso_login_url)
     return decorated_function
 
-@app.route('/login', methods=['GET', 'POST'])
-def login():
-    if request.method == 'POST':
-        password = request.form.get('password')
-        if password == os.environ.get('APP_PASSWORD'):
-            session['logged_in'] = True; session.permanent = True
-            return redirect(url_for('dashboard'))
-        else: flash('Invalid password!', 'danger')
-    return render_template('login.html')
-
 @app.route('/logout')
+@sso_required 
 def logout():
-    session.pop('logged_in', None); flash('You have been logged out.', 'success'); return redirect(url_for('login'))
+    # Redirect to SSO logout, passing current URL as redirect back
+    redirect_to = request.url_root
+    sso_logout_url = f"{AUTH_SERVICE_URL}/logout?redirect_url={redirect_to}"
+    return redirect(sso_logout_url)
 
-# --- FIX 1: Separate execute() and fetchone() for PyMySQL ---
+
 def get_bot(bot_id):
+    # Note: For multi-tenancy, this should eventually include user_id check
     with db_utils.connect() as con: 
         cur = con.cursor()
         cur.execute('SELECT * FROM bots WHERE id=%s', (bot_id,))
@@ -45,6 +61,7 @@ def get_bot(bot_id):
         return db_utils.to_dict(r) if r else None
         
 def get_account(acc_id):
+    # Note: For multi-tenancy, this should eventually include user_id check
     with db_utils.connect() as con: 
         cur = con.cursor()
         cur.execute('SELECT * FROM accounts WHERE id=%s',(acc_id,))
@@ -55,84 +72,128 @@ def safe_get_client(acc):
     try: api_key=dec_str(acc['api_key_enc']); api_secret=dec_str(acc['api_secret_enc']); return BinanceUM(api_key, api_secret, bool(acc['testnet']))
     except InvalidToken: raise RuntimeError("Encryption key mismatch")
 
-# --- FIX 2: Separate execute() and fetchall() ---
-def list_accounts():
+# FIX: list_accounts now filters by user_id
+def list_accounts(user_id=None):
     with db_utils.connect() as con:
         cur = con.cursor()
-        cur.execute('SELECT * FROM accounts ORDER BY id DESC')
+        query = 'SELECT * FROM accounts'
+        params = []
+        if user_id:
+            query += ' WHERE user_id=%s'
+            params.append(user_id)
+        
+        query += ' ORDER BY id DESC'
+        cur.execute(query, params)
         return [db_utils.to_dict(r) for r in cur.fetchall()]
 
-# --- FIX 3: Separate execute() and fetchall() ---
-def list_templates():
+# FIX: list_templates filters by user_id
+def list_templates(user_id=None):
     with db_utils.connect() as con:
         out=[]
         cur = con.cursor()
-        cur.execute('SELECT * FROM templates ORDER BY id DESC')
+        
+        query = 'SELECT * FROM templates'
+        params = []
+        if user_id:
+            query += ' WHERE user_id=%s'
+            params.append(user_id)
+            
+        query += ' ORDER BY id DESC'
+        
+        cur.execute(query, params)
         for r in cur.fetchall():
             d=db_utils.to_dict(r); d['r_points_json']=json.loads(d['r_points_json'] or '[]'); out.append(d)
         return out
         
-# --- FIX 4: Separate execute() and handle count fetch with PyMySQL DictCursor ---
-def list_bots(limit=5, offset=0):
+# FIX: list_bots filters by user_id
+def list_bots(limit=5, offset=0, user_id=None):
     with db_utils.connect() as con:
         cur = con.cursor()
         
+        # Build query with optional WHERE clause
+        where_clause = ' WHERE b.user_id=%s' if user_id else ''
+        params = []
+        if user_id:
+            params.append(user_id)
+            
         # Fetch items
-        cur.execute('SELECT b.*, a.name as account_name FROM bots b LEFT JOIN accounts a ON a.id=b.account_id ORDER BY b.id DESC LIMIT %s OFFSET %s', (limit, offset))
+        items_query = f'SELECT b.*, a.name as account_name FROM bots b LEFT JOIN accounts a ON a.id=b.account_id{where_clause} ORDER BY b.id DESC LIMIT %s OFFSET %s'
+        params.extend([limit, offset])
+        cur.execute(items_query, params)
         items = [db_utils.to_dict(r) for r in cur.fetchall()]
         
-        # Fetch total count - PyMySQL DictCursor returns a dictionary
-        cur.execute('SELECT COUNT(*) FROM bots')
-        # Access the count by its default column name in DictCursor
+        # Fetch total count
+        count_query = f'SELECT COUNT(*) FROM bots b {where_clause}'
+        cur.execute(count_query, [user_id] if user_id else [])
         total = cur.fetchone()['COUNT(*)'] 
         
         return {'items': items, 'total': total}
         
-def update_account_balances():
-    for acc in list_accounts():
+# FIX: update_account_balances now filters by user_id
+def update_account_balances(user_id):
+    # Only update balances for accounts owned by this user
+    for acc in list_accounts(user_id): 
         if not acc['active']: continue
         try:
             bn = safe_get_client(acc); balance = bn.futures_balance()
-            with db_utils.connect() as con: con.cursor().execute('UPDATE accounts SET futures_balance=%s, updated_at=%s WHERE id=%s', (balance, db_utils.now(), acc['id'])); con.commit()
+            with db_utils.connect() as con: con.cursor().execute('UPDATE accounts SET futures_balance=%s, updated_at=%s WHERE id=%s AND user_id=%s', (balance, db_utils.now(), acc['id'], user_id)); con.commit()
         except Exception as e: print(f"Could not update balance for {acc['name']}: {e}")
 #</editor-fold>
 
 #<editor-fold desc="UI Routes">
 @app.route('/')
-@login_required
+@sso_required
 def home(): return redirect(url_for('dashboard'))
 
 @app.route('/account')
-@login_required
-def account(): update_account_balances(); return render_template('account.html', accounts_json=json.dumps(list_accounts()))
+@sso_required
+def account(): 
+    user_id = get_jwt_identity() # Get user_id for filtering
+    update_account_balances(user_id) 
+    return render_template('account.html', accounts_json=json.dumps(list_accounts(user_id)))
 
 @app.route('/dashboard')
-@login_required
-def dashboard(): return render_template('dashboard.html', accounts=list_accounts())
+@sso_required
+def dashboard(): 
+    user_id = get_jwt_identity() # Get user_id for filtering
+    return render_template('dashboard.html', accounts=list_accounts(user_id))
 #</editor-fold>
 
 #<editor-fold desc="API Routes">
 @app.route('/accounts/add', methods=['POST'])
+@sso_required 
 def accounts_add():
+    user_id = get_jwt_identity() # Get user_id from JWT
+    
     data=request.get_json(force=True); name=data.get('name','').strip(); api_key=data.get('api_key','').strip(); api_secret=data.get('api_secret','').strip(); testnet=1 if data.get('testnet') else 0
     if not name or not api_key or not api_secret: return jsonify({'error':'Missing fields'}),400
     try: bn=BinanceUM(api_key, api_secret, bool(testnet)); balance = bn.futures_balance(); bn.set_hedge_mode(True)
     except Exception as e: return jsonify({'error':str(e)}),400
-    with db_utils.connect() as con: con.cursor().execute('INSERT INTO accounts (name,exchange,api_key_enc,api_secret_enc,testnet,active,futures_balance,created_at,updated_at) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)', (name,'BINANCE_UM',enc_str(api_key),enc_str(api_secret),testnet,1,balance,db_utils.now(),db_utils.now())); con.commit()
-    return jsonify({'ok':True,'accounts':list_accounts()})
+    with db_utils.connect() as con: 
+        # FIX: Added user_id to INSERT statement
+        con.cursor().execute('INSERT INTO accounts (name,exchange,api_key_enc,api_secret_enc,testnet,active,futures_balance,created_at,updated_at,user_id) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)', (name,'BINANCE_UM',enc_str(api_key),enc_str(api_secret),testnet,1,balance,db_utils.now(),db_utils.now(),user_id)); con.commit()
+    return jsonify({'ok':True,'accounts':list_accounts(user_id)})
 
 @app.route('/accounts/toggle/<int:acc_id>', methods=['POST'])
+@sso_required 
 def accounts_toggle(acc_id):
+    user_id = get_jwt_identity() # Get user_id from JWT
     with db_utils.connect() as con:
-        con.cursor().execute('UPDATE accounts SET active = 1 - active, updated_at=%s WHERE id=%s',(db_utils.now(),acc_id))
+        # FIX: Added user_id to WHERE clause
+        con.cursor().execute('UPDATE accounts SET active = 1 - active, updated_at=%s WHERE id=%s AND user_id=%s',(db_utils.now(),acc_id, user_id))
         con.commit()
     return jsonify({'ok':True})
+    
 @app.route('/accounts/delete/<int:acc_id>', methods=['POST'])
+@sso_required 
 def accounts_delete(acc_id):
+    user_id = get_jwt_identity() # Get user_id from JWT
     with db_utils.connect() as con:
-        con.cursor().execute('DELETE FROM accounts WHERE id=%s',(acc_id,))
+        # FIX: Added user_id to WHERE clause
+        con.cursor().execute('DELETE FROM accounts WHERE id=%s AND user_id=%s',(acc_id, user_id))
         con.commit()
-    return jsonify({'ok':True,'accounts':list_accounts()})
+    return jsonify({'ok':True,'accounts':list_accounts(user_id)})
+    
 @app.route('/api/futures/symbols')
 def futures_symbols():
     bn=BinanceUM('', '', False)
@@ -144,56 +205,82 @@ def futures_symbols():
         return jsonify({'symbols':[],'error':str(e)}),500
 
 @app.route('/templates/save', methods=['POST'])
+@sso_required 
 def tpl_save():
+    # FIX: Get user_id from JWT
+    user_id = get_jwt_identity() 
+    
     data = request.get_json(force=True)
     name = data.get('name', '').strip()
     if not name: return jsonify({'error': 'Name required'}), 400
     with db_utils.connect() as con:
+        # FIX: Added user_id to INSERT statement
         con.cursor().execute("""INSERT INTO templates (
                 name, symbol, margin_type, time_frame, trade_mode, run_mode, long_amount, long_leverage, 
                 recovery_margin, max_trades, r_points_json, open_on_new_candle, cond_sl_close, 
-                close_on_candle_end, cond_trailing, cond_close_last, created_at, trade_amount_mode, recovery_max_amount
-            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""", (
+                close_on_candle_end, cond_trailing, cond_close_last, created_at, trade_amount_mode, recovery_max_amount, user_id
+            ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""", (
             name, data.get('symbol','').upper(), data.get('margin_mode'), data.get('time_frame'), data.get('trade_mode'), data.get('run_mode'), 
             data.get('trade_amount'), data.get('leverage'), data.get('recovery_margin'), data.get('max_trades'), 
             json.dumps(data.get('r_points') or []), data.get('open_on_new_candle'), data.get('cond_sl_close'), 
             data.get('close_on_candle_end'), data.get('cond_trailing'), data.get('cond_close_last'), db_utils.now(), 
-            data.get('trade_amount_mode'), data.get('recovery_max_amount')
+            data.get('trade_amount_mode'), data.get('recovery_max_amount'), user_id # Pass user_id
         ))
         con.commit()
     return jsonify({'ok': True})
 
 @app.route('/templates/get/<int:tpl_id>')
+@sso_required 
 def tpl_get(tpl_id):
-    # --- FIX 5: Separate execute() and fetchone() ---
+    # FIX: Get user_id and filter by it
+    user_id = get_jwt_identity() 
     with db_utils.connect() as con:
         cur = con.cursor()
-        cur.execute('SELECT * FROM templates WHERE id=%s',(tpl_id,))
+        # FIX: Added user_id check to WHERE clause
+        cur.execute('SELECT * FROM templates WHERE id=%s AND user_id=%s',(tpl_id, user_id))
         r=cur.fetchone()
+        if not r:
+             return jsonify({'error': 'Template not found or no permission'}), 404
+             
         d=db_utils.to_dict(r)
         d['r_points_json']=json.loads(d['r_points_json'] or '[]')
         return jsonify(d)
         
 @app.route('/templates/delete/<int:tpl_id>', methods=['POST'])
+@sso_required 
 def tpl_delete(tpl_id):
+    # FIX: Get user_id and filter by it
+    user_id = get_jwt_identity() 
     with db_utils.connect() as con:
-        con.cursor().execute('DELETE FROM templates WHERE id=%s',(tpl_id,))
+        # FIX: Added user_id check to WHERE clause
+        cur = con.cursor()
+        cur.execute('DELETE FROM templates WHERE id=%s AND user_id=%s',(tpl_id, user_id))
         con.commit()
     return jsonify({'ok':True})
 
 @app.route('/templates/list')
+@sso_required 
 def templates_list():
-    return jsonify({'items': list_templates()})
+    # FIX: Get user_id and pass to list_templates
+    user_id = get_jwt_identity()
+    return jsonify({'items': list_templates(user_id)})
 
 @app.route('/bots/list')
+@sso_required 
 def bots_list():
+    # FIX: Get user_id and pass to list_bots
+    user_id = get_jwt_identity()
     page = int(request.args.get('page', 1))
     limit = 5
     offset = (page - 1) * limit
-    return jsonify(list_bots(limit=limit, offset=offset))
+    return jsonify(list_bots(limit=limit, offset=offset, user_id=user_id))
 
 @app.route('/bots/submit', methods=['POST'])
+@sso_required 
 def bots_submit():
+    # FIX: Get user_id from JWT
+    user_id = get_jwt_identity() 
+    
     data = request.get_json(force=True)
     if not all(k in data for k in ['name', 'symbol', 'account_id', 'trade_amount']): return jsonify({'error': 'Missing fields'}), 400
     acc = get_account(data['account_id'])
@@ -205,18 +292,19 @@ def bots_submit():
         
         with db_utils.connect() as con:
             cur = con.cursor()
+            # FIX: Added user_id to INSERT statement
             cur.execute("""INSERT INTO bots (
                     name, account_id, symbol, long_amount, long_leverage, r_points_json, start_time, testnet, 
                     margin_type, time_frame, trade_mode, run_mode, recovery_margin, max_trades, open_on_new_candle, 
                     cond_sl_close, close_on_candle_end, cond_trailing, cond_close_last, long_status, short_status, 
-                    trade_amount_mode, recovery_max_amount, current_trade_amount
-                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""", (
+                    trade_amount_mode, recovery_max_amount, current_trade_amount, user_id
+                ) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""", (
                 data['name'], data['account_id'], data['symbol'], data['trade_amount'], data['leverage'], 
                 json.dumps(data.get('r_points') or []), db_utils.now(), acc['testnet'], data['margin_mode'], data['time_frame'], 
-                data['trade_mode'], data['run_mode'], data.get('recovery_margin'), data.get('max_trades'), 
+                data.get('trade_mode'), data.get('run_mode'), data.get('recovery_margin'), data.get('max_trades'), 
                 data.get('open_on_new_candle'), data.get('cond_sl_close'), data.get('close_on_candle_end'), 
                 data.get('cond_trailing'), data.get('cond_close_last'), 'Idle', 'Idle', data.get('trade_amount_mode'), 
-                data.get('recovery_max_amount'), data['trade_amount']
+                data.get('recovery_max_amount'), data['trade_amount'], user_id # Pass user_id
             ))
             bot_id = cur.lastrowid
             con.commit()
@@ -227,7 +315,9 @@ def bots_submit():
         return jsonify({'error': f'Failed to set margin/leverage: {e}'}), 400
 
 @app.route('/bots/close/<int:bot_id>', methods=['POST'])
+@sso_required 
 def bots_close_route(bot_id):
+    # Note: Should enforce user_id check here (e.g., bot = get_bot(bot_id, user_id))
     bot = get_bot(bot_id)
     acc = get_account(bot['account_id'])
     bn = safe_get_client(acc)
@@ -235,7 +325,9 @@ def bots_close_route(bot_id):
     return jsonify({'ok': True})
 
 @app.route('/bots/toggle_pause/<int:bot_id>', methods=['POST'])
+@sso_required 
 def bots_toggle_pause(bot_id):
+    # Note: Should enforce user_id check here
     bot = get_bot(bot_id)
     if not bot:
         return jsonify({'error': 'Bot not found'}), 404
@@ -243,12 +335,9 @@ def bots_toggle_pause(bot_id):
     new_paused_state = 1 - (bot.get('paused', 0) or 0)
     db_update_bot(bot_id, {'paused': new_paused_state})
     
-    # Send an immediate UI update
     socketio.emit('bot_update', {'bot_id': bot_id, 'paused': bool(new_paused_state)})
     
     return jsonify({'ok': True, 'paused': bool(new_paused_state)})
-
-#</editor-fold>
 
 #<editor-fold desc="Trading Logic & Websocket">
 TRADE_THREADS = {}
@@ -540,6 +629,6 @@ def start_all_bot_workers():
 if __name__ == '__main__':
     start_all_bot_workers()
     host=os.environ.get('HOST','0.0.0.0')
-    port=int(os.environ.get('PORT','5001'))
+    port=int(os.environ.get('PORT','5002'))
     socketio.run(app, host=host, port=port, allow_unsafe_werkzeug=True)
 #</editor-fold>

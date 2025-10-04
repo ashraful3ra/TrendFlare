@@ -5,3 +5,4 @@ requests==2.32.3
 websocket-client==1.8.0
 cryptography==43.0.1
 pymysql==1.1.0
+Flask-JWT-Extended  # <--- NEW: Single Sign-On এর জন্য এটি প্রয়োজন
